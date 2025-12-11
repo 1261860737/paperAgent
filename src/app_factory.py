@@ -9,6 +9,7 @@ from src.indexing.milvus_vdb import MilvusVDB
 from src.retrieval.retriever_rerank import Retriever
 from src.generation.rag import RAG
 from src.workflows.workflow import PaperAgentWorkflow
+from src.indexing.memory_store import MemoryStore
 
 
 def build_paper_agent_from_pdf(
@@ -19,6 +20,15 @@ def build_paper_agent_from_pdf(
 ) -> PaperAgentWorkflow:
     """
     给定 PDF 构建完整的 PaperAgentWorkflow（无 metadata 版本）
+
+    步骤：
+    1. PDF -> chunks（带 page / chunk_id 等元数据）
+    2. 自研 EmbedData 做 embedding + 二进制量化
+    3. Milvus Lite 建库 & 写入向量（论文内容向量库）
+    4. 构建 Retriever
+    5. 构建 RAG
+    6. 构建 MemoryStore（长期记忆向量库，驻内存）
+    7. 构建 PaperAgentWorkflow    
     """
     logger.info(f"[Factory] Loading and splitting paper: {pdf_path}")
     chunks = load_and_split_paper(
@@ -31,7 +41,7 @@ def build_paper_agent_from_pdf(
 
     logger.info(f"[Factory] Got {len(chunks)} chunks")
 
-    # === 1) 提取文本 ===
+    # === 1) 抽出要嵌入的文本（过滤掉纯章节标题） ===
     texts = [c["content"] for c in chunks if not c["is_section_title"]]
 
     # === 2) 构建 EmbedData（embedding + binary）===
@@ -64,12 +74,21 @@ def build_paper_agent_from_pdf(
     # === 5) 构建 RAG ===
     rag = RAG(retriever=retriever)
 
-    # === 6) 构建 Workflow ===
+    # 6) 长期记忆 MemoryStore（使用同一个 EmbedData 模型）
+    memory_store = MemoryStore(
+        embedder=embed_data,
+        max_items=getattr(settings, "memory_max_items", 200),
+    )
+
+    # === 7) 构建 Workflow ===
     workflow = PaperAgentWorkflow(
         retriever=retriever,
         rag_system=rag,
         qwen3_api_key=settings.qwen3_api_key,
         qwen3_base_url=settings.qwen3_base_url,
+        memory_store=memory_store,
+        short_memory_max_turns=getattr(settings, "short_memory_max_turns", 6),
+        memory_top_k=getattr(settings, "memory_top_k", 3),
     )
 
     logger.info("[Factory] PaperAgentWorkflow created successfully")
