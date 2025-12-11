@@ -48,11 +48,13 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/api/ask")
-async def ask(session_id: str, query: str):
+async def ask(session_id: str, query: str, top_k: int = 3):
     """向某个 Session 提问"""
     workflow = session_manager.get_workflow(session_id)
 
-    result = await workflow.run_workflow(query)
+
+    # 确保将 top_k 参数传递给 run_workflow
+    result = await workflow.run_workflow(query, top_k=top_k)
 
     # 存历史，用于前端显示
     session_manager.append_history(session_id, "user", query)

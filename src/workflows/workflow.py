@@ -348,7 +348,7 @@ class PaperAgentWorkflow:
 
     # ========= 核心：同步流程调度 =========
 
-    def _run_workflow_sync(self, query: str, top_k: Optional[int] = None) -> Dict[str, Any]:
+    def _run_workflow_sync(self, query: str, top_k: Optional[int] = 3) -> Dict[str, Any]:
         """
         同步：完整执行一次论文问答工作流。
         返回：
@@ -424,7 +424,7 @@ class PaperAgentWorkflow:
 
     # ========= 对外：异步接口 =========
 
-    async def run_workflow(self, query: str, top_k: Optional[int] = None) -> Dict[str, Any]:
+    async def run_workflow(self, query: str, top_k: Optional[int] = 3) -> Dict[str, Any]:
         """
         异步版本，便于在 FastAPI / Streamlit 等框架中使用。
         当前内部步骤是同步调用，如果你后面想完全异步化，可以用 asyncio.to_thread 包一层。
