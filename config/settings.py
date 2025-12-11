@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     qwen3_base_url: str
     
     # Model Configuration
-    embedding_model: str = "BAAI/bge-large-en-v1.5"
+    embedding_model: str = "BAAI/bge-m3"
     llm_model: str = "qwen3-max"
     vector_dim: int = 1024
     

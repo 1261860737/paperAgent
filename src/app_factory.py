@@ -1,0 +1,76 @@
+from typing import Dict, Any
+
+from loguru import logger
+
+from config.settings import settings
+from src.ingestion.load_split import load_and_split_paper
+from src.indexing.embed_data import EmbedData
+from src.indexing.milvus_vdb import MilvusVDB
+from src.retrieval.retriever_rerank import Retriever
+from src.generation.rag import RAG
+from src.workflows.workflow import PaperAgentWorkflow
+
+
+def build_paper_agent_from_pdf(
+    pdf_path: str,
+    session_id: str = "default",
+    max_chars: int = 1000,
+    overlap_chars: int = 150,
+) -> PaperAgentWorkflow:
+    """
+    给定 PDF 构建完整的 PaperAgentWorkflow（无 metadata 版本）
+    """
+    logger.info(f"[Factory] Loading and splitting paper: {pdf_path}")
+    chunks = load_and_split_paper(
+        pdf_path,
+        max_chars=max_chars,
+        overlap_chars=overlap_chars,
+    )
+    if not chunks:
+        raise RuntimeError(f"从 PDF 中没有切分出 chunk: {pdf_path}")
+
+    logger.info(f"[Factory] Got {len(chunks)} chunks")
+
+    # === 1) 提取文本 ===
+    texts = [c["content"] for c in chunks if not c["is_section_title"]]
+
+    # === 2) 构建 EmbedData（embedding + binary）===
+    embed_data = EmbedData(
+        embed_model_name=settings.embedding_model,
+        batch_size=settings.batch_size,
+    )
+    embed_data.embed(texts)
+
+    # === 3) 创建 Milvus Lite 库 ===
+    collection_name = f"paper_{session_id}"
+
+    vector_db = MilvusVDB(
+        collection_name=collection_name,
+        vector_dim=settings.vector_dim,
+        batch_size=settings.batch_size,
+        db_file=settings.milvus_db_path,
+    )
+    vector_db.initialize_client()
+    vector_db.create_collection()
+    vector_db.ingest_data(embed_data)
+
+    # === 4) 构建 Retriever（不再传 context_metadata）===
+    retriever = Retriever(
+        vector_db=vector_db,
+        embed_data=embed_data,
+        top_k=settings.top_k,
+    )
+
+    # === 5) 构建 RAG ===
+    rag = RAG(retriever=retriever)
+
+    # === 6) 构建 Workflow ===
+    workflow = PaperAgentWorkflow(
+        retriever=retriever,
+        rag_system=rag,
+        qwen3_api_key=settings.qwen3_api_key,
+        qwen3_base_url=settings.qwen3_base_url,
+    )
+
+    logger.info("[Factory] PaperAgentWorkflow created successfully")
+    return workflow

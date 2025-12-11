@@ -139,10 +139,24 @@ class RAG:
         # LLM 回答
         response = self.query(query, top_k=top_k)
 
+        # 统一封装 sources 信息
+        sources: List[Dict[str, Any]] = []
+        for r in retrieval_results:
+            # 按你 retriever_rerank 的结构来取字段
+            sources.append(
+                {
+                    "id": r.get("id") or r.get("node_id"),
+                    "score": r.get("score"),
+                    "page": r.get("metadata", {}).get("page"),
+                    "chunk_index": r.get("metadata", {}).get("chunk_index"),
+                    "snippet": r.get("snippet") or r.get("text") or "",
+                }
+            )
+
         return {
             "response": response,
             "context": context,
-            "sources": retrieval_results,
+            "sources": sources,
             "query": query,
             "model": self.llm_model,
         }

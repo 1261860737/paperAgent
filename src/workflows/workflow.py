@@ -210,12 +210,19 @@ class PaperAgentWorkflow:
         rag_response: str,
         web_results: Optional[str] = "",
         use_web_results: bool = False,
+        top_k: int = 3
     ) -> str:
         """
         根据标志决定：
         - 如果 use_web_results=True：综合 RAG 回答 + Web 搜索结果；
         - 否则：对 RAG 回答进行中文润色。
         """
+        citations = self.retriever.get_citations(query=query, top_k=top_k)
+        citation_text = ""
+        for c in citations:
+            snippet = c["snippet"]
+            citation_text += f"[{c['rank']}] {snippet}\n\n"
+
         if use_web_results and web_results:
             logger.info("[Synth] Synthesizing answer from RAG + Web results...")
             prompt = SYNTHESIS_TEMPLATE.format(
@@ -234,6 +241,7 @@ class PaperAgentWorkflow:
             max_tokens=settings.max_tokens,
         )
         final_answer = resp.choices[0].message.content or ""
+        final_answer += f"\n\n====== 论文原文引用（来自自动检索）======\n{citation_text}"
         return final_answer.strip()
 
     # ========= 核心：同步流程调度 =========

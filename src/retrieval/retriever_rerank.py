@@ -8,7 +8,7 @@ from config.settings import settings
 class TextNode(BaseModel):
     text: str
     id_: str
-    metadata: dict | None = Field(default=None)
+
 
 class NodeWithScore(BaseModel):
     node: TextNode
@@ -19,11 +19,14 @@ class Retriever:
         self, 
         vector_db: MilvusVDB, 
         embed_data: EmbedData, 
-        top_k: int = None
-    ):
+        top_k: int = None,
+
+    ) -> None:
         self.vector_db = vector_db
         self.embed_data = embed_data
         self.top_k = top_k or settings.top_k
+
+
 
     def search(self, query: str, top_k: Optional[int] = None):
         """利用向量相似性搜索相关文件"""
@@ -44,9 +47,12 @@ class Retriever:
         # 转换为 NodeWithScore 对象
         nodes_with_scores = []
         for result in search_results:
+            text = result["payload"]["context"]
+
+                
             node = TextNode(
                 text=result["payload"]["context"],
-                id_=str(result["id"])
+                id_=str(result["id"]),
             )
             node_with_score = NodeWithScore(
                 node=node,
@@ -74,7 +80,6 @@ class Retriever:
                 "context": node_with_score.node.text,
                 "score": node_with_score.score,
                 "node_id": node_with_score.node.id_,
-                "metadata": node_with_score.node.metadata or {}
             })
         
         return results
