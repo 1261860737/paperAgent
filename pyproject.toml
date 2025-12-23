@@ -1,0 +1,22 @@
+[project]
+name = "paperagent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chromadb",
+    "fastapi",
+    "firecrawl>=4.10.4",
+    "langchain",
+    "langchain-chroma",
+    "langchain-openai",
+    "loguru>=0.7.3",
+    "milvus-lite>=2.5.1",
+    "openai",
+    "pydantic-settings>=2.12.0",
+    "pymilvus>=2.6.5",
+    "pypdf>=6.4.1",
+    "sentence-transformers>=5.1.2",
+    "uvicorn",
+]
