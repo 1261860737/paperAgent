@@ -60,6 +60,16 @@ class MilvusVDB:
             datatype=DataType.BINARY_VECTOR, 
             dim=self.vector_dim
         )
+        schema.add_field(field_name="node_type", datatype=DataType.VARCHAR, max_length=32)
+        schema.add_field(field_name="law_id", datatype=DataType.VARCHAR, max_length=64)
+        schema.add_field(field_name="law_title", datatype=DataType.VARCHAR, max_length=256)
+        schema.add_field(field_name="article_no", datatype=DataType.INT64)
+        schema.add_field(field_name="article_label", datatype=DataType.VARCHAR, max_length=64)
+        schema.add_field(field_name="chapter", datatype=DataType.VARCHAR, max_length=256)
+        schema.add_field(field_name="part_no", datatype=DataType.INT64)
+        schema.add_field(field_name="part_total", datatype=DataType.INT64)
+        schema.add_field(field_name="source_file", datatype=DataType.VARCHAR, max_length=256)
+
 
         # 为二进制向量创建索引参数
         index_params = self.client.prepare_index_params()
@@ -79,51 +89,74 @@ class MilvusVDB:
 
         logger.info(f"Created collection '{self.collection_name}' with binary vectors (dim={self.vector_dim})")
 
-    def ingest_data(self, embed_data: EmbedData):
-        """将嵌入数据输入矢量数据库。"""
+    def ingest_data_raw(self, contexts: List[str], binary_embeddings: List[bytes], metadatas: List[dict] = None):
         if not self.client:
             raise RuntimeError("Milvus client not initialized. Call initialize_client() first.")
-        
-        logger.info(f"Ingesting {len(embed_data.contexts)} documents...")
+
+        metadatas = metadatas or [{} for _ in contexts]
+        if len(metadatas) != len(contexts):
+            raise ValueError(f"metadatas length mismatch: {len(metadatas)} vs contexts {len(contexts)}")
+
+        logger.info(f"Ingesting {len(contexts)} documents...")
+
+        def _s(x, default=""):
+            return default if x is None else str(x)
+
+        def _i(x, default=-1):
+            try:
+                return default if x is None else int(x)
+            except Exception:
+                return default
 
         total_inserted = 0
-        for batch_context, batch_binary_embeddings in zip(
-            batch_iterate(embed_data.contexts, self.batch_size),
-            batch_iterate(embed_data.binary_embeddings, self.batch_size)
+        for batch_ctx, batch_vec, batch_meta in zip(
+            batch_iterate(contexts, self.batch_size),
+            batch_iterate(binary_embeddings, self.batch_size),
+            batch_iterate(metadatas, self.batch_size),
         ):
-            # 准备插入数据
             data_batch = []
-            for context, binary_embedding in zip(batch_context, batch_binary_embeddings):
+            for context, binary_embedding, meta in zip(batch_ctx, batch_vec, batch_meta):
                 data_batch.append({
                     "context": context,
-                    "binary_vector": binary_embedding
+                    "binary_vector": binary_embedding,
+
+                    # ===== 元数据显式入库 =====
+                    "node_type": _s(meta.get("node_type"), "article"),
+                    "law_id": _s(meta.get("law_id")),
+                    "law_title": _s(meta.get("law_title")),
+                    "article_no": _i(meta.get("article_no")),
+                    "article_label": _s(meta.get("article_label")),
+                    "chapter": _s(meta.get("chapter")),
+                    "part_no": _i(meta.get("part_no"), 1),
+                    "part_total": _i(meta.get("part_total"), 1),
+                    "source_file": _s(meta.get("source_file")),
                 })
 
-            # Insert batch
-            self.client.insert(
-                collection_name=self.collection_name,
-                data=data_batch
-            )
-
-            total_inserted += len(batch_context)
-            logger.info(f"Inserted batch: {len(batch_context)} documents")
+            self.client.insert(collection_name=self.collection_name, data=data_batch)
+            total_inserted += len(batch_ctx)
+            logger.info(f"Inserted batch: {len(batch_ctx)} documents")
 
         logger.info(f"Successfully ingested {total_inserted} documents with binary quantization")
+
 
     def search(
         self, 
         binary_query: bytes, 
         top_k: int = None,
-        output_fields: List[str] = None
+        output_fields: List[str] = None,
+        filter_expr: str = None
     ):
         if not self.client:
             raise RuntimeError("Milvus client not initialized. Call initialize_client() first.")
         
         top_k = top_k or settings.top_k
-        output_fields = output_fields or ["context"]
+        output_fields = output_fields or [
+        "context", "node_type", "law_title", "law_id", "article_no", "article_label",
+        "chapter", "part_no", "part_total", "source_file"
+        ]
 
         # 使用 MilvusClient 进行相似性搜索
-        search_results = self.client.search(
+        kwargs = dict(
             collection_name=self.collection_name,
             data=[binary_query],
             anns_field="binary_vector",
@@ -131,17 +164,52 @@ class MilvusVDB:
             limit=top_k,
             output_fields=output_fields
         )
+        if filter_expr:
+            kwargs["filter"] = filter_expr
+
+        search_results = self.client.search(**kwargs)
 
         # 格式结果
         formatted_results = []
         for result in search_results[0]:
+            entity = result["entity"]
+            payload = {k: entity.get(k) for k in output_fields}
+
             formatted_results.append({
                 "id": result["id"],
                 "score": 1.0 / (1.0 + result["distance"]),  # 将汉明距离转换为相似度
-                "payload": {"context": result["entity"]["context"]}
+                "payload": payload
             })
 
         return formatted_results
+
+    def query(self, filter_expr: str, output_fields: List[str], limit: int = 1000):
+        if not self.client:
+            raise RuntimeError("Milvus client not initialized. Call initialize_client() first.")
+        # 不同版本参数名可能是 filter 或 expr；MilvusClient 通常用 filter
+        return self.client.query(
+            collection_name=self.collection_name,
+            filter=filter_expr,
+            output_fields=output_fields,
+            limit=limit,
+        )
+
+    def fetch_articles(self, article_nos: List[int]) -> List[dict]:
+        nos = sorted({int(x) for x in article_nos if x is not None})
+        if not nos:
+            return []
+
+        output_fields = [
+            "id", "context", "node_type", "law_title", "law_id", "article_no", "article_label",
+            "chapter", "part_no", "part_total", "source_file"
+        ]
+        expr = f'node_type == "article" && article_no in {nos}'
+        rows = self.query(expr, output_fields=output_fields, limit=5000)
+
+        # 按条号、分片排序（保证“前两条”拼接顺序正确）
+        rows.sort(key=lambda r: (r.get("article_no", -1), r.get("part_no", 1)))
+        return rows
+
 
     def collection_exists(self):
         if not self.client:

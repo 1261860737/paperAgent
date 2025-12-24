@@ -13,12 +13,12 @@ async def main():
 
     logger.info(f"Building ParalegalAgentWorkflow from PDF: {pdf_path}")
 
-    # === 🛑 调试代码：先看看切分结果 ===
+    # === 调试代码：先看看切分结果 ===
     print("--- DEBUG: Checking Chunks ---")
     chunks = load_and_split_document(pdf_path, chunk_size=800, overlap=100)
     for i, chunk in enumerate(chunks[:3]):
         print(f"\n[Chunk {i}]")
-        print(chunk[:200]) # 打印前200字
+        print((chunk.get("text") or "")[:200]) # 打印前200字（node 中的 text 字段）
     print("--- DEBUG END ---\n")
 
     workflow = build_paper_agent_from_pdf(

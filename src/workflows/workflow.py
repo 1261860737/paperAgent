@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Tuple
 from collections import deque
 
 from loguru import logger
@@ -241,14 +241,28 @@ class PaperAgentWorkflow:
         logger.info(f"[Web] Running Firecrawl web search, query={optimized_query!r}")
         try:
             results = self.web.invoke({"query": optimized_query, "limit": limit})
-            # === 🛑 调试打印 ===
-            print(f"\n[DEBUG] Web Search Results Length: {len(results)}")
-            print(f"[DEBUG] Web Search Content Preview: {results[:200]}...\n")
+            # === 调试打印 ===
+            # print(f"\n[DEBUG] Web Search Results Length: {len(results)}")
+            # print(f"[DEBUG] Web Search Content Preview: {results[:200]}...\n")
             # =================
         except Exception as e:
             logger.error(f"[Web] Web search failed: {e}")
             results = "由于技术问题，网络搜索失败."
         return results
+
+    # ========= 工具 5： =========
+
+
+    def _build_citation_text(self, query: str, top_k: int = 3) -> Tuple[str, List[Dict[str, Any]]]:
+        citations = self.retriever.get_citations(query=query, top_k=top_k)
+        lines = []
+        for c in citations:
+            meta = c.get("metadata") or {}
+            art = meta.get("article_no")
+            art_str = f"第{art}条" if art else ""
+            lines.append(f"[{c['rank']}] {art_str}\n{c.get('snippet','')}\n")
+        return "\n".join(lines).strip(), citations
+
 
 # ========= 短期记忆相关 =========
 
@@ -314,6 +328,7 @@ class PaperAgentWorkflow:
         top_k: int = 3,
         dialog_history: Optional[list] = None,
         memory_context: Optional[str] = "",
+        citation_text: Optional[str] = "",
     ) -> str:
         """
         根据标志决定：
@@ -323,8 +338,15 @@ class PaperAgentWorkflow:
         citations = self.retriever.get_citations(query=query, top_k=top_k)
         citation_text = ""
         for c in citations:
-            snippet = c["snippet"]
-            citation_text += f"[{c['rank']}] {snippet}\n\n"
+            citation_text += f"[{c['rank']}] {c['snippet']}\n\n"
+
+        rag_response = (rag_response or "").strip()
+        rag_with_citations = rag_response
+        if citation_text:
+            rag_with_citations = rag_response + "\n\n【可引用法条片段（必须依据下列片段标注第几条）】\n" + citation_text
+
+        memory_block = memory_context or "（当前问题尚无特别相关的长期记忆）"
+        dialog_block = dialog_history or "（暂无历史对话）"
 
         # 2) 保证 memory_context / dialog_history 有默认文本，避免变成 None
         memory_block = memory_context or "（当前问题尚无特别相关的长期记忆）"
@@ -334,7 +356,7 @@ class PaperAgentWorkflow:
             logger.info("[Synth] Synthesizing answer from RAG + Web results + Memory + Dialog history...")
             prompt = SYNTHESIS_TEMPLATE.format(
                 query=query,
-                rag_response=rag_response,
+                rag_response=rag_with_citations,
                 web_results=web_results,
                 memory_context=memory_block,
                 dialog_history=dialog_block,
@@ -342,7 +364,7 @@ class PaperAgentWorkflow:
         else:
             logger.info("[Synth] Refining RAG-only answer (with Memory + Dialog history)...")
             prompt = REFINE_TEMPLATE.format(
-                rag_response=rag_response,
+                rag_response=rag_with_citations,
                 memory_context=memory_block,
                 dialog_history=dialog_block,
                 )
@@ -374,10 +396,15 @@ class PaperAgentWorkflow:
         # Step 1: 法律库 RAG 初始检索
         rag_result = self.rag_answer(query=query, top_k=top_k)
         rag_response: str = rag_result.get("response", "")
-        sources = rag_result.get("sources", [])
+        # 用 retriever 再抓一份“命中法条片段”，并拼到 rag_response 里
+        citation_text, citations = self._build_citation_text(query=query, top_k=top_k or 3)
+        rag_response_for_llm = rag_response
+        if citation_text:
+            rag_response_for_llm = rag_response.strip() + "\n\n【命中的法条原文片段（仅可据此引用，不得推断）】\n" + citation_text
 
-        # Step 2: 评估 RAG 检索到的法条是否充足
-        evaluation = self.evaluate_rag_answer(query=query, rag_response=rag_response)
+        # Step 2: 评估（让评估也看到 citations，避免误判 BAD）
+        evaluation = self.evaluate_rag_answer(query=query, rag_response=rag_response_for_llm)
+        
 
         if evaluation == "GOOD":
             # RAG 法条充足 → 生成专业法律意见
@@ -388,6 +415,7 @@ class PaperAgentWorkflow:
                 use_web_results=False,
                 memory_context=memory_context,
                 dialog_history=dialog_history,
+                citation_text=citation_text,
             )
             web_used = False
             web_results = None
@@ -402,6 +430,7 @@ class PaperAgentWorkflow:
                 use_web_results=True,
                 memory_context=memory_context,
                 dialog_history=dialog_history,
+                citation_text=citation_text,
             )
             web_used = True
 
@@ -414,7 +443,7 @@ class PaperAgentWorkflow:
             "rag_response": rag_response,
             "web_search_used": web_used,
             "web_results": web_results,
-            "sources": sources,
+            "sources": citations,
             "evaluation": evaluation,
             "query": query,
             "memory_hits": memory_hits,
